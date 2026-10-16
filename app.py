@@ -5,12 +5,14 @@ Avvio locale:  streamlit run app.py   (serve .streamlit/secrets.toml)
 Dati salvati in un Google Sheet con 3 fogli: todo_clienti, todo_stagioni, todo_task
 (creati in automatico al primo avvio). Se lo sheet è quello di topsheet, gli elenchi dei
 clienti e delle stagioni vengono letti (sola lettura) dai suoi fogli Clienti e Stagioni.
-Secrets: gli stessi di topsheet (sheet_id + gcp_json).
+Secrets: gli stessi di topsheet (sheet_id + gcp_json oppure gcp_service_account).
 
 Predisposta per i topsheet: l'importatore deve solo chiamare
 `ensure_cliente`, `ensure_stagione` e `add_task(..., chiave_esterna=...)`.
 La chiave_esterna (es. "cliente|stagione|ordine|tipo") evita i duplicati
 quando lo stesso topsheet viene reimportato.
+
+Task generici (non legati a un cliente): scegliere il cliente «Generale».
 """
 import html
 import json
@@ -29,12 +31,16 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 # di altre app (es. TOPSHEETDB) senza toccare i fogli esistenti (Clienti, Stagioni, Ordini...).
 PREFISSO_TAB = "todo_"
 
+# Voce per i task non legati a un cliente (note, promemoria generici)
+GENERALE = "Generale"
+
 TIPI = [
     "Telefonare",
     "Scadenza",
     "Controllo ordine",
     "Ordine evaso?",
     "Pagamento ricevuto?",
+    "Nota",
     "Altro",
 ]
 
@@ -112,8 +118,10 @@ def _unici(nomi):
 
 
 def elenco_clienti():
-    """Clienti di topsheet (foglio Clienti) + quelli aggiunti da questa app."""
-    return sorted(_unici(esterno("Clienti", "name") + list(read("clienti")["nome"])), key=str.casefold)
+    """Clienti di topsheet + quelli aggiunti da questa app. «Generale» sempre per prima."""
+    nomi = sorted(_unici(esterno("Clienti", "name") + list(read("clienti")["nome"])), key=str.casefold)
+    nomi = [n for n in nomi if n.casefold() != GENERALE.casefold()]
+    return [GENERALE] + nomi
 
 
 def elenco_stagioni():
@@ -251,10 +259,13 @@ def pagina_da_fare():
             continue
         visibili += 1
 
-        testo = f"**{esc(r['cliente'])}**"
+        # Task generici: niente nome cliente, il testo parte dal tipo
+        if r["cliente"] == GENERALE:
+            testo = f"**{esc(r['tipo'])}**"
+        else:
+            testo = f"**{esc(r['cliente'])}** · {esc(r['tipo'])}"
         if r["stagione"]:
             testo += f" · {esc(r['stagione'])}"
-        testo += f" · {esc(r['tipo'])}"
         if r["descrizione"]:
             testo += f" — {esc(r['descrizione'])}"
         if fatto:
@@ -296,7 +307,7 @@ def pagina_aggiungi():
 
     with st.form("nuovo_task", clear_on_submit=True):
         c1, c2 = st.columns(2)
-        sel_cli = c1.selectbox("Cliente", clienti + [NUOVO])
+        sel_cli = c1.selectbox("Cliente (o «Generale» per un promemoria libero)", clienti + [NUOVO])
         nuovo_cli = c1.text_input("Nome nuovo cliente (se hai scelto «Nuovo»)")
         sel_sta = c2.selectbox("Stagione", ["(nessuna)"] + stagioni + [NUOVO])
         nuova_sta = c2.text_input("Nome nuova stagione (se hai scelto «Nuovo»)", placeholder="es. FW27")
@@ -314,7 +325,8 @@ def pagina_aggiungi():
             if not (nome_cli or "").strip():
                 st.error("Indica il cliente.")
             else:
-                cliente = ensure_cliente(nome_cli)
+                cliente = GENERALE if nome_cli.strip().casefold() == GENERALE.casefold() \
+                    else ensure_cliente(nome_cli)
                 if sel_sta == "(nessuna)":
                     stagione = None
                 elif sel_sta == NUOVO:
@@ -339,7 +351,8 @@ def _con_conteggi(nomi, colonna):
 def pagina_anagrafica():
     st.header("Clienti e stagioni")
     st.caption("Clienti e stagioni di topsheet compaiono qui in automatico; "
-               "quelli aggiunti da qui restano solo in questa app.")
+               "quelli aggiunti da qui restano solo in questa app. "
+               f"«{GENERALE}» è la voce per i task senza cliente.")
     c1, c2 = st.columns(2)
 
     with c1:
