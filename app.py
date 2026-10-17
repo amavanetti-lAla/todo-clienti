@@ -17,8 +17,9 @@ Task generici (non legati a un cliente): scegliere il cliente «Generale».
 import html
 import json
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from io import BytesIO
+from zoneinfo import ZoneInfo
 
 import gspread
 import pandas as pd
@@ -34,6 +35,14 @@ PREFISSO_TAB = "todo_"
 # Voce per i task non legati a un cliente (note, promemoria generici)
 GENERALE = "Generale"
 
+# Link alle altre app
+WSP_URL = "https://wsppriceselectiontool.streamlit.app/"
+LIBRETTO_URL = "https://libretto-zedonk-joor-4l4mqgjeazlfybucfenhmu.streamlit.app/"
+TOPSHEET_URL = "https://topsheetdb.streamlit.app/"
+
+# Fuso orario per data e ora di completamento (il server di Streamlit lavora in UTC)
+FUSO = ZoneInfo("Europe/Rome")
+
 TIPI = [
     "Telefonare",
     "Scadenza",
@@ -43,6 +52,8 @@ TIPI = [
     "Nota",
     "Altro",
 ]
+
+PAGINE = ["Da fare", "Aggiungi task", "Clienti e stagioni", "Esporta"]
 
 # Colonne di ogni foglio (l'ordine conta: A, B, C, ...)
 SCHEMA = {
@@ -55,6 +66,28 @@ COL_ID = 1               # A
 COL_CHIAVE = 9           # I  (chiave_esterna)
 COL_STATO = "G"
 COL_COMPLETATO = "L"
+
+
+# ------------------------------------------------------------ date e ore
+def adesso():
+    return datetime.now(FUSO)
+
+
+def oggi_it():
+    return adesso().date()
+
+
+def fmt_completato(s):
+    """'2026-10-17 14:32' -> '17/10/2026 alle 14:32' (le vecchie date senza ora restano solo data)."""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    try:
+        if len(s) <= 10:
+            return date.fromisoformat(s).strftime("%d/%m/%Y")
+        return datetime.fromisoformat(s).strftime("%d/%m/%Y alle %H:%M")
+    except ValueError:
+        return s
 
 
 # ------------------------------------------------------------ Google Sheets
@@ -171,7 +204,7 @@ def add_task(cliente, stagione, tipo, descrizione="", scadenza=None,
         [nuovo_id, cliente, stagione or "", tipo, descrizione,
          scadenza.isoformat() if isinstance(scadenza, date) else (scadenza or ""),
          "da fare", origine, chiave_esterna or "", note,
-         date.today().isoformat(), ""],
+         oggi_it().isoformat(), ""],
         value_input_option="RAW",
     )
     read.clear()
@@ -186,7 +219,8 @@ def set_stato(task_id, fatto):
     ws.batch_update(
         [
             {"range": f"{COL_STATO}{r}", "values": [["fatto" if fatto else "da fare"]]},
-            {"range": f"{COL_COMPLETATO}{r}", "values": [[date.today().isoformat() if fatto else ""]]},
+            {"range": f"{COL_COMPLETATO}{r}",
+             "values": [[adesso().strftime("%Y-%m-%d %H:%M") if fatto else ""]]},
         ],
         value_input_option="RAW",
     )
@@ -242,7 +276,7 @@ def pagina_da_fare():
     df["_senza"] = df["scadenza"] == ""
     df = df.sort_values(["_fatto", "_senza", "scadenza", "cliente"])
 
-    oggi = date.today()
+    oggi = oggi_it()
     tra7 = oggi + timedelta(days=7)
 
     visibili = 0
@@ -270,23 +304,28 @@ def pagina_da_fare():
             testo += f" — {esc(r['descrizione'])}"
         if fatto:
             testo = f"~~{testo}~~"
+
+        # Dettagli sulla stessa riga del testo
         dettaglio = []
         if scad:
             dettaglio.append(f"📅 {scad.strftime('%d/%m/%Y')}")
+        if fatto and r["completato_il"]:
+            dettaglio.append(f"✅ completato il {esc(fmt_completato(r['completato_il']))}")
         if r["origine"] == "topsheet":
             dettaglio.append("📄 topsheet")
         if r["note"]:
             dettaglio.append(f"📝 {esc(r['note'])}")
+
+        riga = f"{semaforo} {testo}"
+        if dettaglio:
+            riga += " · <small>" + " · ".join(dettaglio) + "</small>"
 
         col_chk, col_txt, col_del = st.columns([0.08, 0.80, 0.12], vertical_alignment="center")
         col_chk.checkbox(
             "fatto", value=fatto, key=f"chk_{r['id']}",
             on_change=on_toggle, args=(r["id"],), label_visibility="collapsed",
         )
-        col_txt.markdown(
-            f"{semaforo} {testo}" + (f"  \n<small>{' · '.join(dettaglio)}</small>" if dettaglio else ""),
-            unsafe_allow_html=True,
-        )
+        col_txt.markdown(riga, unsafe_allow_html=True)
         with col_del.popover("🗑"):
             st.write("Eliminare definitivamente?")
             st.button("Sì, elimina", key=f"del_{r['id']}", type="primary",
@@ -312,10 +351,11 @@ def pagina_aggiungi():
         sel_sta = c2.selectbox("Stagione", ["(nessuna)"] + stagioni + [NUOVO])
         nuova_sta = c2.text_input("Nome nuova stagione (se hai scelto «Nuovo»)", placeholder="es. FW27")
 
-        c3, c4 = st.columns(2)
+        # Tipo, scadenza e «senza scadenza» sulla stessa riga
+        c3, c4, c5 = st.columns([2, 2, 2], vertical_alignment="bottom")
         tipo = c3.selectbox("Tipo", TIPI)
-        senza_scad = c4.checkbox("Senza scadenza (ignora la data qui sotto)")
-        scad = c4.date_input("Scadenza", value=date.today() + timedelta(days=7), format="DD/MM/YYYY")
+        scad = c4.date_input("Scadenza", value=oggi_it() + timedelta(days=7), format="DD/MM/YYYY")
+        senza_scad = c5.checkbox("Senza scadenza")
 
         descrizione = st.text_input("Descrizione")
         note = st.text_area("Note", height=80)
@@ -384,6 +424,28 @@ def pagina_esporta():
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+# ----------------------------------------------------------------- barra superiore
+STILE_PULSANTI = """
+<style>
+.st-key-btn_wsp a, .st-key-btn_libretto a, .st-key-btn_topsheet a {
+    border-radius: 8px;
+    transition: background-color .15s;
+}
+.st-key-btn_wsp a { background-color: #DDE8D8; border: 1px solid #C3D5BC; }
+.st-key-btn_wsp a:hover { background-color: #CFDFC8; border-color: #B3C9AB; }
+.st-key-btn_wsp a, .st-key-btn_wsp a * { color: #3E5239 !important; }
+
+.st-key-btn_libretto a { background-color: #DCEAF4; border: 1px solid #BDD3E5; }
+.st-key-btn_libretto a:hover { background-color: #CBDFEE; border-color: #A9C6DD; }
+.st-key-btn_libretto a, .st-key-btn_libretto a * { color: #35506A !important; }
+
+.st-key-btn_topsheet a { background-color: #F4E6D3; border: 1px solid #E6D0B0; }
+.st-key-btn_topsheet a:hover { background-color: #EEDCC0; border-color: #D9C09A; }
+.st-key-btn_topsheet a, .st-key-btn_topsheet a * { color: #6B4F2A !important; }
+</style>
+"""
+
+
 # ----------------------------------------------------------------- main
 def main():
     st.set_page_config(page_title="Cose da fare", page_icon="✅", layout="wide")
@@ -395,12 +457,25 @@ def main():
         st.exception(e)
         st.stop()
 
-    pagina = st.sidebar.radio(
-        "Menu", ["Da fare", "Aggiungi task", "Clienti e stagioni", "Esporta"]
-    )
-    if st.sidebar.button("🔄 Aggiorna dati"):
-        st.cache_data.clear()
-        st.rerun()
+    with st.sidebar:
+        st.header("Cose da fare")
+        if st.button("🔄 Aggiorna dati"):
+            st.cache_data.clear()
+            st.rerun()
+
+    # Barra superiore: menu a sinistra, link alle altre app a destra
+    st.markdown(STILE_PULSANTI, unsafe_allow_html=True)
+    menu_col, link_col = st.columns([4, 1])
+    with menu_col:
+        pagina = st.radio("Menu", PAGINE, horizontal=True, key="pagina", label_visibility="collapsed")
+    with link_col:
+        with st.container(key="btn_wsp"):
+            st.link_button("Apri WSP ↗", WSP_URL, use_container_width=True)
+        with st.container(key="btn_libretto"):
+            st.link_button("libretto Zedonk ↔ JOOR ↗", LIBRETTO_URL, use_container_width=True)
+        with st.container(key="btn_topsheet"):
+            st.link_button("Topsheet ↗", TOPSHEET_URL, use_container_width=True)
+
     {
         "Da fare": pagina_da_fare,
         "Aggiungi task": pagina_aggiungi,
