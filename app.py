@@ -66,6 +66,7 @@ COL_ID = 1               # A
 COL_CHIAVE = 9           # I  (chiave_esterna)
 COL_STATO = "G"
 COL_COMPLETATO = "L"
+COL_NOTE = "J"
 
 
 # ------------------------------------------------------------ date e ore
@@ -227,6 +228,24 @@ def set_stato(task_id, fatto):
     read.clear()
 
 
+def update_task(task_id, cliente, stagione, tipo, descrizione, scadenza, note):
+    """Modifica i campi di un task esistente (cliente, stagione, tipo, descrizione, scadenza, note)."""
+    ws = get_ws()["task"]
+    r = _riga(ws, task_id)
+    if r is None:
+        return False
+    scad = scadenza.isoformat() if isinstance(scadenza, date) else (scadenza or "")
+    ws.batch_update(
+        [
+            {"range": f"B{r}:F{r}", "values": [[cliente, stagione or "", tipo, descrizione, scad]]},
+            {"range": f"{COL_NOTE}{r}", "values": [[note]]},
+        ],
+        value_input_option="RAW",
+    )
+    read.clear()
+    return True
+
+
 def delete_task(task_id):
     ws = get_ws()["task"]
     r = _riga(ws, task_id)
@@ -244,9 +263,48 @@ def on_delete(task_id):
     delete_task(task_id)
 
 
+def on_edit(task_id):
+    st.session_state["edit_id"] = task_id
+
+
 # ----------------------------------------------------------------- pagine
 def esc(s):
     return html.escape(str(s))
+
+
+def form_modifica(r, clienti, stagioni):
+    """Modulo di modifica mostrato al posto della riga del task."""
+    opz_cli = clienti if r["cliente"] in clienti else [r["cliente"]] + clienti
+    opz_sta = ["(nessuna)"] + stagioni
+    if r["stagione"] and r["stagione"] not in opz_sta:
+        opz_sta.append(r["stagione"])
+    opz_tipo = TIPI if r["tipo"] in TIPI else [r["tipo"]] + TIPI
+    scad0 = date.fromisoformat(r["scadenza"]) if r["scadenza"] else oggi_it() + timedelta(days=7)
+
+    with st.container(border=True):
+        st.markdown("**✏️ Modifica task**")
+        with st.form(f"fm_{r['id']}"):
+            c1, c2 = st.columns(2)
+            cliente = c1.selectbox("Cliente", opz_cli, index=opz_cli.index(r["cliente"]))
+            sta = c2.selectbox("Stagione", opz_sta,
+                               index=opz_sta.index(r["stagione"]) if r["stagione"] else 0)
+            c3, c4, c5 = st.columns([2, 2, 2], vertical_alignment="bottom")
+            tipo = c3.selectbox("Tipo", opz_tipo, index=opz_tipo.index(r["tipo"]))
+            scad = c4.date_input("Scadenza", value=scad0, format="DD/MM/YYYY")
+            senza = c5.checkbox("Senza scadenza", value=not r["scadenza"])
+            descr = st.text_input("Descrizione", value=r["descrizione"])
+            note = st.text_area("Note", value=r["note"], height=80)
+            b1, b2, _ = st.columns([1, 1, 4])
+            salva = b1.form_submit_button("Salva", type="primary")
+            annulla = b2.form_submit_button("Annulla")
+        if salva:
+            update_task(r["id"], cliente, None if sta == "(nessuna)" else sta, tipo,
+                        descr.strip(), None if senza else scad, note.strip())
+            st.session_state.pop("edit_id", None)
+            st.rerun()
+        if annulla:
+            st.session_state.pop("edit_id", None)
+            st.rerun()
 
 
 def pagina_da_fare():
@@ -293,6 +351,10 @@ def pagina_da_fare():
             continue
         visibili += 1
 
+        if not fatto and st.session_state.get("edit_id") == r["id"]:
+            form_modifica(r, clienti, stagioni)
+            continue
+
         # Task generici: niente nome cliente, il testo parte dal tipo
         if r["cliente"] == GENERALE:
             testo = f"**{esc(r['tipo'])}**"
@@ -323,8 +385,8 @@ def pagina_da_fare():
             completato = ('<div style="text-align:right"><small>✅ completato il '
                           f"{esc(fmt_completato(r['completato_il']))}</small></div>")
 
-        col_chk, col_data, col_txt, col_fine, col_del = st.columns(
-            [0.05, 0.14, 0.46, 0.24, 0.11], vertical_alignment="center")
+        col_chk, col_data, col_txt, col_fine, col_mod, col_del = st.columns(
+            [0.05, 0.13, 0.42, 0.22, 0.09, 0.09], vertical_alignment="center")
         col_chk.checkbox(
             "fatto", value=fatto, key=f"chk_{r['id']}",
             on_change=on_toggle, args=(r["id"],), label_visibility="collapsed",
@@ -332,6 +394,8 @@ def pagina_da_fare():
         col_data.markdown(data_txt)
         col_txt.markdown(riga, unsafe_allow_html=True)
         col_fine.markdown(completato, unsafe_allow_html=True)
+        if not fatto:
+            col_mod.button("✏️", key=f"mod_{r['id']}", on_click=on_edit, args=(r["id"],))
         with col_del.popover("🗑"):
             st.write("Eliminare definitivamente?")
             st.button("Sì, elimina", key=f"del_{r['id']}", type="primary",
