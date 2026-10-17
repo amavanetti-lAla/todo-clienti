@@ -358,10 +358,13 @@ def pagina_da_fare():
         # Task generici: niente nome cliente, il testo parte dal tipo
         if r["cliente"] == GENERALE:
             testo = f"**{esc(r['tipo'])}**"
+            if r["stagione"]:
+                testo += f" · {esc(r['stagione'])}"
         else:
-            testo = f"**{esc(r['cliente'])}** · {esc(r['tipo'])}"
-        if r["stagione"]:
-            testo += f" · {esc(r['stagione'])}"
+            testo = f"**{esc(r['cliente'])}**"
+            if r["stagione"]:
+                testo += f" · {esc(r['stagione'])}"   # stagione subito dopo il cliente
+            testo += f" · {esc(r['tipo'])}"
         if r["descrizione"]:
             testo += f" — {esc(r['descrizione'])}"
         if fatto:
