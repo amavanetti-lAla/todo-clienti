@@ -305,12 +305,10 @@ def pagina_da_fare():
         if fatto:
             testo = f"~~{testo}~~"
 
-        # Dettagli sulla stessa riga del testo
+        # Scadenza in una colonna a sinistra (tra la casella e il semaforo),
+        # dettagli accanto al testo, completamento tutto a destra
+        data_txt = f"📅 {scad.strftime('%d/%m/%Y')}" if scad else ""
         dettaglio = []
-        if scad:
-            dettaglio.append(f"📅 {scad.strftime('%d/%m/%Y')}")
-        if fatto and r["completato_il"]:
-            dettaglio.append(f"✅ completato il {esc(fmt_completato(r['completato_il']))}")
         if r["origine"] == "topsheet":
             dettaglio.append("📄 topsheet")
         if r["note"]:
@@ -320,12 +318,20 @@ def pagina_da_fare():
         if dettaglio:
             riga += " · <small>" + " · ".join(dettaglio) + "</small>"
 
-        col_chk, col_txt, col_del = st.columns([0.08, 0.80, 0.12], vertical_alignment="center")
+        completato = ""
+        if fatto and r["completato_il"]:
+            completato = ('<div style="text-align:right"><small>✅ completato il '
+                          f"{esc(fmt_completato(r['completato_il']))}</small></div>")
+
+        col_chk, col_data, col_txt, col_fine, col_del = st.columns(
+            [0.05, 0.14, 0.46, 0.24, 0.11], vertical_alignment="center")
         col_chk.checkbox(
             "fatto", value=fatto, key=f"chk_{r['id']}",
             on_change=on_toggle, args=(r["id"],), label_visibility="collapsed",
         )
+        col_data.markdown(data_txt)
         col_txt.markdown(riga, unsafe_allow_html=True)
+        col_fine.markdown(completato, unsafe_allow_html=True)
         with col_del.popover("🗑"):
             st.write("Eliminare definitivamente?")
             st.button("Sì, elimina", key=f"del_{r['id']}", type="primary",
